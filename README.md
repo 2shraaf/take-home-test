@@ -87,10 +87,92 @@ POST /ingest ──▶ raw_ingests (durable, encrypted, session_id UNIQUE) ─�
   `better-sqlite3-multiple-ciphers` so Drizzle's driver resolves the SQLCipher
   build; there is only one native module installed.
 
+## Project layout
+
+Every source file has one responsibility. Filenames are `snake_case`, functions
+`camelCase`, types `PascalCase`; modules import directly from their target file
+(no barrels).
+
+```
+src/
+  index.ts              Process entrypoint: load config → open+migrate DB → startConsumer → listen.
+  app.ts                Express app and the four routes. No business logic — delegates to forms/ + consumer/.
+  config.ts             loadConfig(): parse + validate env; throws if DB_ENCRYPTION_KEY is missing.
+  log.ts                log(event, data): one-line JSON to stdout at each pipeline transition. Silent under NODE_ENV=test.
+  errors.ts             messageOf(unknown): narrow a thrown value to a string.
+
+  db/
+    schema.ts           Drizzle table definitions (raw_ingests, forms) + the IngestStatus union. Single source of truth for the schema.
+    client.ts           getDb(): open the encrypted SQLite file, apply migrations, memoise the Drizzle handle. closeDb() for tests/shutdown.
+
+  forms/
+    schemas/ingested_schema.ts     IngestedFormSchema type — the third party's payload shape (snake_case).
+    schemas/transformed_schema.ts  TransformedFormSchema type — the FORM-BOT-ready shape (camelCase).
+    validate.ts         validateIngestedForm(unknown): Zod check against the agreed schema. Never throws; returns { ok, value | error }.
+    transform.ts         Pure transform rules — splitName, mapGender, parseDateOfBirth, flattenAddress, and transformForm composing them. Implements docs/transform-contract.md.
+    form_record.ts       buildFormRow(transformed, extras): map a transform result + geocode output onto a `forms` insert row.
+    ingest.ts            ingestRawPayload(unknown): the only place a raw_ingests row is created. Enforces session_id presence + DB-level uniqueness.
+    examples/*.json      Sample third-party payloads (used by the validator tests).
+
+  consumer/
+    retry.ts            withRetry(operation, opts) + backoffDelayMs + RetryExhaustedError. The one shared retry-with-backoff, used identically for geocode and email.
+    consumer.ts         The consumer. processIngest (claim → validate → ADR-0003 identity check → transform → geocode → persist form+obligation → email),
+                        deliverEmail (leased, idempotent), runSweep, recoverInProgress, startConsumer/stopConsumer, triggerProcessing, retryIngest, retryAllFailed.
+
+  providers/
+    httpresponse.ts     HttpResponse<T> envelope type returned by every provider.
+    idealpostcodes.ts   lookupPostcode(postcode): mock geocoding provider (95% success, 1s latency).
+    sendgrid.ts         sendEmail({to,from,subject,body}): mock email provider (95% success, 1s latency).
+    test_control.ts     Test-only seam: forceProvider / resetProviders + resolveProviderBehaviour (shared by both providers). Production path is untouched.
+
+tests/
+  setup.ts              jest setupFiles: in-memory DB, zero backoff, AUTO_TRIGGER_CONSUMER=false.
+  helpers/db.ts         resetDb() — truncate both tables between tests.
+  helpers/factories.ts  makeIngestedForm(overrides) — valid-payload factory with unique ids.
+  forms/transform.test.ts       Transform-rule units, incl. single-token name and malformed / offset dates.
+  forms/validate.test.ts        Schema validation: happy path, drift, optional fields.
+  consumer/retry.test.ts        withRetry: success / exhaustion / recovery / onRetry.
+  consumer/consumer.test.ts     The pipeline via DB-visible state — tickets 04/05/06, incl. crash-atomicity, the claim race, no-double-send, and startup/trigger wiring.
+  providers/test_control.test.ts Deterministic seam + "production is still flaky" check.
+  db/encryption.test.ts         File is not plaintext SQLite; wrong key throws; right key reads.
+  config.test.ts                loadConfig fail-fast + numeric parsing.
+  app.test.ts                   HTTP endpoints via supertest.
+
+drizzle/                Generated migration SQL + journal. Applied on startup. Regenerate with `npm run db:generate` after editing db/schema.ts.
+drizzle.config.ts       drizzle-kit config (dialect, schema path, out dir).
+tsconfig.json           Typecheck config (src + tests).
+tsconfig.build.json     Build config (src only — keeps test files out of dist/).
+CONTEXT.md              Domain glossary. The authoritative vocabulary the code uses.
+docs/adr/               The three architecture decisions (encrypted SQLite, DB-backed queue, duplicate identity).
+docs/transform-contract.md  The business-rule contract transform.ts implements.
+.planning/              Spec, codebase map, research. Background — not build inputs.
+```
+
+## Reading the code
+
+Follow the pipeline in this order:
+
+1. **`CONTEXT.md`** — the vocabulary every other file uses.
+2. **`src/db/schema.ts`** — the two tables and the status lifecycle
+   (`pending → processing → { failed_validation | failed_transient | possible_duplicate | complete }`).
+3. **`src/forms/transform.ts`** with **`docs/transform-contract.md`** beside it —
+   the pure business rules.
+4. **`src/consumer/consumer.ts`**, `processIngest` — the orchestration that ties
+   validate → transform → geocode → persist → email together, plus the claim /
+   lease / recovery mechanics.
+5. **`src/app.ts`** — the thin HTTP layer over all of the above.
+
+The `forms` row carries the email obligation as columns
+(`email_status`, `email_retry_count`, `email_next_attempt_at`, `email_last_error`,
+`email_last_attempt_at`, `email_sent_at`) written in the **same INSERT** as the
+form, so a form can never exist without its obligation. `email_next_attempt_at`
+doubles as a short lease so an in-flight send and a concurrent sweep can't deliver
+twice. `raw_ingests.locked_at` is the equivalent claim marker for the ingest.
+
 ## Tests
 
 ```bash
-npm test           # jest, ~75 tests, in-memory DB, no external services
+npm test           # jest, ~80 tests, in-memory DB, no external services
 npm run typecheck  # tsc --noEmit
 ```
 
