@@ -1,17 +1,15 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../../src/db/client";
 import { forms, rawIngests } from "../../src/db/schema";
+import { deliverEmail, processIngest } from "../../src/consumer/pipeline";
+import { retryAllFailed, retryIngest } from "../../src/consumer/manual_retry";
 import {
-	deliverEmail,
-	processIngest,
 	recoverInProgress,
-	retryAllFailed,
-	retryIngest,
 	runSweep,
 	startConsumer,
 	stopConsumer,
 	triggerProcessing,
-} from "../../src/consumer/consumer";
+} from "../../src/consumer/sweep";
 import { ingestRawPayload } from "../../src/forms/ingest";
 import * as idealpostcodes from "../../src/providers/idealpostcodes";
 import * as sendgrid from "../../src/providers/sendgrid";

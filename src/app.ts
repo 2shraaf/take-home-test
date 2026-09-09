@@ -4,7 +4,8 @@ import { getDb } from "./db/client";
 import { forms, rawIngests } from "./db/schema";
 import { messageOf } from "./errors";
 import { ingestRawPayload } from "./forms/ingest";
-import { retryAllFailed, retryIngest, triggerProcessing } from "./consumer/consumer";
+import { retryAllFailed, retryIngest } from "./consumer/manual_retry";
+import { triggerProcessing } from "./consumer/sweep";
 import { log } from "./log";
 
 const app = express();

@@ -116,8 +116,10 @@ src/
 
   consumer/
     retry.ts            withRetry(operation, opts) + backoffDelayMs + RetryExhaustedError. The one shared retry-with-backoff, used identically for geocode and email.
-    consumer.ts         The consumer. processIngest (claim → validate → ADR-0003 identity check → transform → geocode → persist form+obligation → email),
-                        deliverEmail (leased, idempotent), runSweep, recoverInProgress, startConsumer/stopConsumer, triggerProcessing, retryIngest, retryAllFailed.
+    pipeline.ts         processIngest (claim → validate → ADR-0003 identity check → transform → geocode → persist form+obligation → email) and
+                        deliverEmail (leased, idempotent). The core of "the consumer" as CONTEXT.md defines it.
+    sweep.ts            runSweep, recoverInProgress, startConsumer/stopConsumer, triggerProcessing — the startup recovery + interval safety net + fire-and-forget trigger.
+    manual_retry.ts     retryIngest, retryAllFailed — the /retry endpoints' logic; resume-from-stage, never a second form.
 
   providers/
     httpresponse.ts     HttpResponse<T> envelope type returned by every provider.
@@ -157,9 +159,10 @@ Follow the pipeline in this order:
    (`pending → processing → { failed_validation | failed_transient | possible_duplicate | complete }`).
 3. **`src/forms/transform.ts`** with **`docs/transform-contract.md`** beside it —
    the pure business rules.
-4. **`src/consumer/consumer.ts`**, `processIngest` — the orchestration that ties
+4. **`src/consumer/pipeline.ts`**, `processIngest` — the orchestration that ties
    validate → transform → geocode → persist → email together, plus the claim /
-   lease / recovery mechanics.
+   lease mechanics. `sweep.ts` wraps it in recovery + the interval;
+   `manual_retry.ts` is the `/retry` path.
 5. **`src/app.ts`** — the thin HTTP layer over all of the above.
 
 The `forms` row carries the email obligation as columns

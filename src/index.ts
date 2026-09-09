@@ -1,6 +1,6 @@
 import app from "./app";
 import { loadConfig } from "./config";
-import { startConsumer } from "./consumer/consumer";
+import { startConsumer } from "./consumer/sweep";
 import { getDb } from "./db/client";
 import { log } from "./log";
 

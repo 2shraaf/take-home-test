@@ -1,6 +1,7 @@
 import request from "supertest";
 import app from "../src/app";
-import { processIngest, runSweep } from "../src/consumer/consumer";
+import { processIngest } from "../src/consumer/pipeline";
+import { runSweep } from "../src/consumer/sweep";
 import { forceProvider, resetProviders } from "../src/providers/test_control";
 import { resetDb } from "./helpers/db";
 import { makeIngestedForm } from "./helpers/factories";

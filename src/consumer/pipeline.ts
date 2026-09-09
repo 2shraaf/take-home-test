@@ -15,7 +15,7 @@ import { backoffDelayMs, withRetry } from "./retry";
 const TEAM_INBOX = "happyforms@bots.com";
 const PIPELINE_FROM = "form-pipeline@healthtech-1.example";
 
-/** Statuses the consumer will pick up for a fresh full-pipeline pass. */
+/** Statuses a fresh full-pipeline pass will claim. */
 const CLAIMABLE: IngestStatus[] = ["pending", "failed_transient"];
 
 const retryOptions = () => {
@@ -61,7 +61,10 @@ const claimIngest = (ingestId: string): boolean => {
 };
 
 /** Geocode the postcode with the shared retry/backoff helper. Throws when exhausted. */
-const geocode = async (ingestId: string, postcode: string): Promise<{ longitude: number; latitude: number }> => {
+const geocode = async (
+	ingestId: string,
+	postcode: string,
+): Promise<{ longitude: number; latitude: number }> => {
 	const response = await withRetry(() => lookupPostcode(postcode), {
 		...retryOptions(),
 		onRetry: (attempt, error) => log("geocode_retry", { ingestId, attempt, error }),
@@ -258,163 +261,4 @@ export const deliverEmail = async (formId: string): Promise<void> => {
 			.run();
 		log("email_failed", { formId, error: message, exhausted: true });
 	}
-};
-
-/** On startup, anything left mid-processing from a crash is picked back up. */
-export const recoverInProgress = (): void => {
-	const reset = getDb()
-		.update(rawIngests)
-		.set({ status: "pending", lockedAt: null, updatedAt: Date.now() })
-		.where(eq(rawIngests.status, "processing"))
-		.run();
-	if (reset.changes > 0) {
-		log("startup_recovery", { recovered: reset.changes });
-	}
-};
-
-/**
- * The interval safety net. Re-attempts due `failed_transient` ingests and pending
- * email obligations; never touches `failed_validation` or `possible_duplicate`.
- * Also reclaims rows whose previous pass crashed while holding the claim.
- */
-export const runSweep = async (): Promise<void> => {
-	const db = getDb();
-	const now = Date.now();
-
-	db.update(rawIngests)
-		.set({ status: "pending", lockedAt: null, updatedAt: now })
-		.where(
-			and(eq(rawIngests.status, "processing"), lte(rawIngests.lockedAt, now - loadConfig().staleLockMs)),
-		)
-		.run();
-
-	const dueIngests = db
-		.select({ id: rawIngests.id })
-		.from(rawIngests)
-		.where(
-			or(
-				eq(rawIngests.status, "pending"),
-				and(
-					eq(rawIngests.status, "failed_transient"),
-					or(isNull(rawIngests.nextAttemptAt), lte(rawIngests.nextAttemptAt, now)),
-				),
-			),
-		)
-		.all();
-	for (const { id } of dueIngests) {
-		await processIngest(id);
-	}
-
-	const dueEmails = db
-		.select({ id: forms.id })
-		.from(forms)
-		.where(
-			and(
-				eq(forms.emailStatus, "pending"),
-				or(isNull(forms.emailNextAttemptAt), lte(forms.emailNextAttemptAt, now)),
-			),
-		)
-		.all();
-	for (const { id } of dueEmails) {
-		await deliverEmail(id);
-	}
-
-	if (dueIngests.length > 0 || dueEmails.length > 0) {
-		log("sweep", { ingests: dueIngests.length, emails: dueEmails.length });
-	}
-};
-
-let sweepTimer: ReturnType<typeof setInterval> | undefined;
-
-export const startConsumer = (): void => {
-	recoverInProgress();
-	const { sweepIntervalMs } = loadConfig();
-	sweepTimer = setInterval(() => {
-		void runSweep().catch((error) => log("process_error", { error: messageOf(error) }));
-	}, sweepIntervalMs);
-	sweepTimer.unref?.();
-	// Kick an immediate sweep so restart recovery doesn't wait a full interval.
-	void runSweep().catch((error) => log("process_error", { error: messageOf(error) }));
-};
-
-export const stopConsumer = (): void => {
-	if (sweepTimer) {
-		clearInterval(sweepTimer);
-	}
-	sweepTimer = undefined;
-};
-
-/** Fire-and-forget trigger used by the ingest endpoint (disabled in tests). */
-export const triggerProcessing = (ingestId: string): void => {
-	if (!loadConfig().autoTriggerConsumer) {
-		return;
-	}
-	void processIngest(ingestId).catch((error) =>
-		log("process_error", { ingestId, error: messageOf(error) }),
-	);
-};
-
-export type RetryResult =
-	| { found: false }
-	| { found: true; status: IngestStatus; emailStatus?: string };
-
-/**
- * Manual retry of one form by session identifier. Resumes from whatever stage the
- * form actually needs: a full pipeline pass if it never transformed, an
- * email-only attempt if it already did. Can never produce a second form.
- */
-export const retryIngest = async (sessionId: string): Promise<RetryResult> => {
-	const db = getDb();
-	const row = db.select().from(rawIngests).where(eq(rawIngests.sessionId, sessionId)).get();
-	if (!row) {
-		return { found: false };
-	}
-
-	const form = db.select().from(forms).where(eq(forms.ingestId, row.id)).get();
-
-	if (form) {
-		if (form.emailStatus === "pending") {
-			// Manual retry ignores the backoff schedule: make the obligation due now.
-			db.update(forms)
-				.set({ emailNextAttemptAt: null, updatedAt: Date.now() })
-				.where(eq(forms.id, form.id))
-				.run();
-			await deliverEmail(form.id);
-		}
-	} else {
-		db.update(rawIngests)
-			.set({
-				status: "pending",
-				validationError: null,
-				lastError: null,
-				nextAttemptAt: null,
-				lockedAt: null,
-				updatedAt: Date.now(),
-			})
-			.where(eq(rawIngests.id, row.id))
-			.run();
-		await processIngest(row.id);
-	}
-
-	const updated = db.select().from(rawIngests).where(eq(rawIngests.id, row.id)).get();
-	const updatedForm = db.select().from(forms).where(eq(forms.ingestId, row.id)).get();
-	return {
-		found: true,
-		status: (updated?.status ?? row.status) as IngestStatus,
-		emailStatus: updatedForm?.emailStatus,
-	};
-};
-
-/** Bulk retry of every currently-failed form — for use right after a fix ships. */
-export const retryAllFailed = async (): Promise<{ retried: number }> => {
-	const db = getDb();
-	const rows = db
-		.select({ sessionId: rawIngests.sessionId })
-		.from(rawIngests)
-		.where(inArray(rawIngests.status, ["failed_validation", "failed_transient"]))
-		.all();
-	for (const { sessionId } of rows) {
-		await retryIngest(sessionId);
-	}
-	return { retried: rows.length };
 };
