@@ -1,7 +1,16 @@
 import app from "./app";
+import { loadConfig } from "./config";
+import { startConsumer } from "./consumer/consumer";
+import { getDb } from "./db/client";
+import { log } from "./log";
 
-const PORT = process.env.PORT || 3000;
+const { port } = loadConfig();
 
-app.listen(PORT, () => {
-	console.log(`Server is running on http://localhost:${PORT}`);
-});
+// Fail fast: opens the encrypted database and applies migrations. Throws here if
+// DB_ENCRYPTION_KEY is missing.
+getDb();
+
+// In-process consumer: startup recovery + interval sweep (ADR-0002).
+startConsumer();
+
+app.listen(port, () => log("server_started", { port }));

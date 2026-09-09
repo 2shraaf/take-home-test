@@ -1,13 +1,17 @@
 import { HttpResponse } from "./httpresponse";
+import { resolveProviderBehaviour } from "./test_control";
 
-export const lookupPostcode = async (postcode: string): Promise<HttpResponse<{ longitude: number; latitude: number }>> => {
-	// Generate a random number between 0 and 1
-	const randomNumber = Math.random();
+const REAL_DELAY_MS = 1000;
+const REAL_SUCCESS_RATE = 0.95;
+
+export const lookupPostcode = async (
+	postcode: string,
+): Promise<HttpResponse<{ longitude: number; latitude: number }>> => {
+	const { success, delayMs } = resolveProviderBehaviour("geocode", REAL_DELAY_MS, REAL_SUCCESS_RATE);
 
 	// Simulating an asynchronous operation, e.g., looking up a postcode
-	await new Promise((resolve) => setTimeout(resolve, 1000));
+	await new Promise((resolve) => setTimeout(resolve, delayMs));
 
-    const success = randomNumber < 0.95;
 	return {
 		statusCode: success ? 200 : 500,
 		body: success ? { longitude: 50.05, latitude: -5.05 } : undefined,
