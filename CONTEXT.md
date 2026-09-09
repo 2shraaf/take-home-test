@@ -24,8 +24,16 @@ The downstream system this pipeline prepares forms for. Must never receive the s
 ### States
 
 **Duplicate**:
-Two ingests sharing the same `session_id`. Enforced by a unique constraint at ingest time, so a duplicate never enters the processing pipeline at all — it's rejected at the door, not deduplicated after the fact.
+Two ingests sharing the same `session_id`. Enforced by a unique constraint at ingest time, so a duplicate never enters the processing pipeline at all — it's rejected at the door, not deduplicated after the fact. See ADR-0003 for why `session_id` rather than `application_reference` or a composite key.
 _Avoid_: resubmission
+
+**Possible duplicate**:
+An ingest whose `application_reference` matches an existing form's, but whose `session_id` differs. Neither auto-accepted nor auto-rejected — flagged into a distinct state for human review, since the third party's field semantics aren't documented anywhere we can rely on. See ADR-0003.
+_Avoid_: duplicate (a possible duplicate is explicitly *not* the enforced kind above)
+
+**Obligation** (as in "email obligation"):
+The durable record that an email must eventually be sent for a given form, created in the same step that persists the form itself — never a separate, later step that could be skipped. What makes "guaranteed" true rather than aspirational.
+_Avoid_: notification, task
 
 **Failed (validation)**:
 An ingested form that didn't conform to the currently-agreed schema. Terminal until a code fix ships — never auto-retried, since it will fail identically every time until the code changes. Only cleared by an explicit `/retry` call.
@@ -40,5 +48,5 @@ The obligation is durably recorded the moment a form finishes transformation, an
 _Avoid_: reliable, best-effort
 
 **Retry** (the verb/endpoint):
-Manually forcing reprocessing of forms in a `failed` state — typically invoked after a code fix ships for a schema-drift issue. Distinct from the consumer's automatic sweep, which only ever retries *transient* failures, never validation failures.
-_Avoid_: reprocess, resend
+Manually forcing reprocessing of forms in a `failed` state — typically invoked after a code fix ships for a schema-drift issue. Distinct from the consumer's automatic sweep, which only ever retries *transient* failures, never validation failures. Always resumes from whatever stage the form actually needs — never restarts a pipeline that already completed earlier stages. A form stuck only on its email obligation is retried by resending the email alone: never re-geocoded, never re-persisted, never given a second form record.
+_Avoid_: reprocess, resend, reprocess-from-scratch
