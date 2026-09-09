@@ -14,6 +14,6 @@ Runtime validation/transformation code itself is out of scope here — it lands 
 
 **Status:** ready-for-agent
 
-- [ ] `IngestedFormSchema` and `TransformedFormSchema` (or equivalent) are exported and importable from another module
-- [ ] Every business rule listed above is written down somewhere reviewable (e.g. `CONTEXT.md` or a contract doc), in enough detail that ticket 04 requires no new judgment calls to implement
-- [ ] No runtime validation/transformation logic is introduced by this ticket
+- [x] `IngestedFormSchema` and `TransformedFormSchema` (or equivalent) are exported and importable from another module (direct import from each schema file — no barrel, per the repo's documented "each module imports directly from target file" convention)
+- [x] Every business rule listed above is written down somewhere reviewable (e.g. `CONTEXT.md` or a contract doc), in enough detail that ticket 04 requires no new judgment calls to implement
+- [x] No runtime validation/transformation logic is introduced by this ticket
