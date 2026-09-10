@@ -6,6 +6,8 @@ persists the result, and sends a guaranteed email — while never
 handing the FORM-BOT the same form twice and never losing a form to a bad schema  
 or a processing bug.
 
+<img width="2651" height="3520" alt="image" src="https://github.com/user-attachments/assets/54e23f02-e727-45c0-bc5d-7711e54f231c" />
+
 The full design rationale is in `[.planning/SPEC.md](.planning/SPEC.md)`; the
 domain glossary the code follows is in `[CONTEXT.md](CONTEXT.md)`.
 
@@ -233,53 +235,3 @@ The task as received is preserved in
 `ingested_schema.ts`, geocode the postcode, transform to `transformed_schema.ts`,
 capture failures for a later `/retry`, never deliver a duplicate to the FORM-BOT,
 and send a guaranteed email to `happyforms@bots.com` on success.
-
-flowchart TD
-    A[POST /ingest] --> B[(raw_ingests\ndurable · encrypted · session_id UNIQUE)]
-    B -->|409| DUP[duplicate rejected at the door]
-    B --> R[202 Accepted]
-    B -.->|event trigger + interval sweep| C{Consumer}
-
-```
-C --> V[validate]
-V -->|schema drift| FV[[failed_validation\nterminal until code fix]]
-V --> ID[identity check ADR-0003]
-ID -->|application_reference reused| PD[[possible_duplicate\nhuman review]]
-ID --> T[transform]
-T --> G[geocode postcode\nwithRetry + backoff]
-G -->|exhausted| FT[[failed_transient\nauto-retried by sweep]]
-G --> P[persist form + email obligation\nsingle db.transaction]
-P --> E[send email\nsame withRetry helper]
-E -->|exhausted| FT
-E --> DONE[[complete]]
-
-FT -.->|sweep / retry| C
-FV -.->|POST /retry only| C
-PD -.->|POST /retry/:sessionId after ops decision| C
-```
-
-ASCII (drop in a README or ticket)
-
-```
-             ┌─────────────┐
-```
-
-  POST /ingest ─▶│ raw_ingests │─▶ 202        (session_id UNIQUE ─▶ 409 duplicate)
-                 └──────┬──────┘
-      event trigger +   │
-      interval sweep     ▼
-   ┌──────────────── Consumer ────────────────┐
-   │ validate ──▶ failed_validation (terminal, /retry only)
-   │    │
-   │ identity ──▶ possible_duplicate (human review)
-   │    │
-   │ transform
-   │    │
-   │ geocode ─┐  retry+backoff, exhausted ──▶ failed_transient ─┐
-   │    │     │                                                 │  (sweep / retry
-   │ persist form + email obligation   ← one db.transaction     │   resume from
-   │    │                                                       │   needed stage)
-   │ email ───┘  same retry helper, exhausted ──▶ failed_transient
-   │    │
-   │ complete
-   └──────────────────────────────────────────┘
